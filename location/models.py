@@ -1,5 +1,4 @@
 from django.core.cache import caches
-from django_redis.cache import RedisCache
 import uuid
 from core.models import CachedManager
 from django.conf import settings
@@ -16,17 +15,30 @@ from django.db.models import Q
 
 logger = logging.getLogger(__file__)
 cache = caches["location"]
+USER_LOCATION_CACHE_KEYS = ("user_locations_{}", "user_districts_{}")
 
 
 def free_cache_for_user(user_id="*"):
-    # wildcard only supported for Redis
-    if user_id == "*" and not isinstance(cache, RedisCache):
-        cache.clear()
-    else:
-        cache_name = f"user_locations_{user_id}"
-        cache.delete(cache_name)
-        cache_name = f"user_districts_{user_id}"
-        cache.delete(cache_name)
+    """Drop the cached location and district sets of one user, or of every user for "*".
+
+    "*" uses delete_pattern where the backend has it (django-redis); on other
+    backends the keys of every interactive and technical user are deleted.
+    clear() would empty the whole backend: on Django's Redis backend, a FLUSHDB
+    of the database that every cache alias shares.
+    """
+    if user_id != "*":
+        cache.delete_many([key.format(user_id) for key in USER_LOCATION_CACHE_KEYS])
+        return
+    delete_pattern = getattr(cache, "delete_pattern", None)
+    if delete_pattern:
+        for key in USER_LOCATION_CACHE_KEYS:
+            delete_pattern(key.format("*"))
+        return
+    user_ids = list(core_models.InteractiveUser.objects.values_list("id", flat=True))
+    user_ids += core_models.TechnicalUser.objects.values_list("id", flat=True)
+    cache.delete_many(
+        [key.format(user) for user in user_ids for key in USER_LOCATION_CACHE_KEYS] + ["user_districts_all"]
+    )
 
 
 @receiver(post_save, sender=core_models.InteractiveUser)
