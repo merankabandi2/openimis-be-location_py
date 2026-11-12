@@ -382,6 +382,8 @@ class Location(core_models.VersionedModel, core_models.ExtendableModel):
 
     @classmethod
     def get_queryset(cls, queryset, user):
+        # A queryset given by the caller (a search, a type) narrows the locations allowed to the user.
+        narrows = queryset is not None
         queryset = cls.filter_queryset(queryset)
         # GraphQL calls with an info object while Rest calls with the user itself
         if isinstance(user, ResolveInfo):
@@ -399,7 +401,7 @@ class Location(core_models.VersionedModel, core_models.ExtendableModel):
             if user.is_officer:
                 from core.models import Officer
 
-                return (
+                allowed = (
                     Officer.objects.filter(
                         code=user.username, has_login=True, validity_to__isnull=True
                     )
@@ -409,7 +411,7 @@ class Location(core_models.VersionedModel, core_models.ExtendableModel):
             elif user.is_claim_admin:
                 from core.models.user import ClaimAdmin
 
-                return (
+                allowed = (
                     ClaimAdmin.objects.filter(
                         code=user.username, has_login=True, validity_to__isnull=True
                     )
@@ -417,9 +419,10 @@ class Location(core_models.VersionedModel, core_models.ExtendableModel):
                     .officer_allowed_locations
                 )
             elif user.is_superuser:
-                return Location.objects
+                allowed = Location.objects.all()
             else:
-                return cls.objects.allowed(user.i_user_id, qs=True, strict=False)
+                allowed = cls.objects.allowed(user.i_user_id, qs=True, strict=False)
+            return queryset & allowed if narrows else allowed
         return queryset
 
     @staticmethod
