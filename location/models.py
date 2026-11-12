@@ -1,4 +1,5 @@
 from django.core.cache import caches
+from django.core.cache.backends.redis import RedisCache as DjangoRedisCache
 from django_redis.cache import RedisCache
 import uuid
 from core.models import CachedManager
@@ -8,7 +9,7 @@ from django.dispatch import receiver
 from django.db.models.signals import post_save, post_delete
 
 from core import models as core_models
-from core.cache_control import cache_delete, cache_get, cache_memo_forget, cache_set
+from core.cache_control import cache_delete, cache_delete_many, cache_get, cache_memo_forget, cache_set
 from graphql import ResolveInfo
 from .apps import LocationConfig
 import logging
@@ -32,6 +33,13 @@ def _cache_set(key, value):
 USER_LOCATION_CACHE_KEYS = ("user_locations_{}", "user_districts_{}")
 
 
+def _every_user_location_key():
+    user_ids = list(core_models.InteractiveUser.objects.values_list("id", flat=True))
+    user_ids += core_models.TechnicalUser.objects.values_list("id", flat=True)
+    keys = [key.format(user_id) for user_id in user_ids for key in USER_LOCATION_CACHE_KEYS]
+    return keys + ["user_districts_all"]
+
+
 def free_cache_for_user(user_id="*"):
     """Drop the cached location and district sets for one user, or for everyone.
 
@@ -39,8 +47,10 @@ def free_cache_for_user(user_id="*"):
     shifts the expanded set of every user whose branch the location falls
     under, not only of users whose own assignment changed.
 
-    Globbing is a django-redis extension, so the wildcard needs
-    ``delete_pattern`` on Redis and a full ``clear()`` on any other backend.
+    Globbing is a django-redis extension, so the wildcard uses
+    ``delete_pattern`` there. Django's own Redis backend cannot glob, and its
+    ``clear()`` is a FLUSHDB of the database every cache alias shares: the keys
+    of every user are named instead. Any other backend is cleared.
     ``cache.delete()`` is literal: passing "*" to it deleted a key *named*
     "user_locations_*" and invalidated nothing, which -- since these entries
     are written with ``timeout=None`` -- left them stale for the life of the
@@ -52,6 +62,8 @@ def free_cache_for_user(user_id="*"):
         if isinstance(cache, RedisCache):
             for key in USER_LOCATION_CACHE_KEYS:
                 cache.delete_pattern(key.format("*"))
+        elif isinstance(cache, DjangoRedisCache):
+            cache_delete_many(_every_user_location_key(), alias=LOCATION_CACHE)
         else:
             cache.clear()
         return
